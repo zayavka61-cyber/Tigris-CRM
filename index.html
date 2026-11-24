@@ -227,8 +227,10 @@
     let db = null;
     let auth = null;
     let currentUser = null;
+    let isCloudReady = false;
     let unsubscribeWorkspace = null;
     let isApplyingRemote = false;
+    let lastCloudErrorInfo = null;
 
     function getWorkspaceCode() {
       let code = '';
@@ -269,22 +271,28 @@
     }
 
     function getAppIdSafe() {
-      return typeof __app_id !== 'undefined' && __app_id ? String(__app_id) : 'default-app-id';
+      return typeof __app_id !== 'undefined' && __app_id ? String(__app_id) : 'tigris-crm';
+    }
+
+    function getWorkspaceDocRef(code) {
+      const appId = getAppIdSafe();
+      return doc(db, 'artifacts', appId, 'public', 'data', 'tigrum_workspaces', code);
     }
 
     function subscribeToWorkspace(code) {
-      if (!db || !currentUser) return;
+      if (!db) return;
       if (unsubscribeWorkspace) {
         unsubscribeWorkspace();
         unsubscribeWorkspace = null;
       }
 
-      const appId = getAppIdSafe();
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'tigrum_workspaces', code);
+      const docRef = getWorkspaceDocRef(code);
 
       unsubscribeWorkspace = onSnapshot(
         docRef,
         (snap) => {
+          isCloudReady = true;
+          lastCloudErrorInfo = null;
           updateCloudBadge('online', `Облако: ${code}`);
           if (snap.exists()) {
             const remote = snap.data();
@@ -303,22 +311,26 @@
               }
             }
           } else {
-            // Если в облаке еще нет документа для этого кода, сохраняем текущую локальную базу
+            // Если в облаке еще нет документа для этого кода, создаем его из текущей базы
             pushStateToCloud();
           }
         },
         (error) => {
           console.error('Ошибка облачной синхронизации:', error);
-          updateCloudBadge('offline', 'Офлайн');
+          isCloudReady = false;
+          lastCloudErrorInfo = {
+            code: error?.code || 'firestore-error',
+            message: error?.message || 'Нет доступа к базе Firestore'
+          };
+          updateCloudBadge('offline', 'Нет доступа к БД');
         }
       );
     }
 
     async function pushStateToCloud() {
-      if (isApplyingRemote || !db || !currentUser) return;
+      if (isApplyingRemote || !db) return;
       const code = getWorkspaceCode();
-      const appId = getAppIdSafe();
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'tigrum_workspaces', code);
+      const docRef = getWorkspaceDocRef(code);
 
       try {
         updateCloudBadge('syncing');
@@ -329,12 +341,21 @@
           workspaceCode: code,
           payloadJson: payload,
           updatedAt: new Date().toISOString(),
-          updatedBy: currentUser.uid
+          updatedBy: currentUser ? currentUser.uid : 'direct-client'
         }, { merge: true });
+        isCloudReady = true;
+        lastCloudErrorInfo = null;
         updateCloudBadge('online', `Облако: ${code}`);
+        return true;
       } catch (err) {
         console.error('Ошибка отправки в облако:', err);
-        updateCloudBadge('offline', 'Ошибка сети');
+        isCloudReady = false;
+        lastCloudErrorInfo = {
+          code: err?.code || 'write-error',
+          message: err?.message || 'Ошибка записи в Firestore'
+        };
+        updateCloudBadge('offline', 'Ошибка записи');
+        return false;
       }
     }
 
@@ -356,9 +377,16 @@
     }
 
     async function forceUploadCurrentToCloud() {
-      await pushStateToCloud();
+      const ok = await pushStateToCloud();
       if (typeof window.showToast === 'function') {
-        window.showToast('Текущая база отправлена в облако', 'success');
+        if (ok) {
+          window.showToast('Связь с облаком работает! База сохранена', 'success');
+        } else {
+          window.showToast('База отклонила запись. Проверьте правила Firestore', 'error');
+        }
+      }
+      if (typeof window.openCloudSyncModal === 'function' && !document.getElementById('modal-root')?.classList.contains('hidden')) {
+        window.openCloudSyncModal();
       }
     }
 
@@ -366,32 +394,52 @@
       getWorkspaceCode,
       switchWorkspaceCode,
       pushStateToCloud,
-      forceUploadCurrentToCloud
+      forceUploadCurrentToCloud,
+      isOnline: () => isCloudReady,
+      getLastError: () => lastCloudErrorInfo
     };
 
     async function initCloudBackend() {
       try {
-        if (typeof __firebase_config === 'undefined' || !__firebase_config) {
-          updateCloudBadge('offline', 'Локальный режим');
-          return;
-        }
-        const firebaseConfig = JSON.parse(__firebase_config);
+        const defaultFirebaseConfig = {
+          apiKey: "AIzaSyB0AYjdPx_KuWVWqA7Uk_zTzqch6YQWE_8",
+          authDomain: "tigris-crm.firebaseapp.com",
+          projectId: "tigris-crm",
+          storageBucket: "tigris-crm.firebasestorage.app",
+          messagingSenderId: "579953185352",
+          appId: "1:579953185352:web:0f5268778f463f0315fe7d",
+          measurementId: "G-B2YKFH126B"
+        };
+
+        const firebaseConfig = (typeof __firebase_config !== 'undefined' && __firebase_config)
+          ? JSON.parse(__firebase_config)
+          : defaultFirebaseConfig;
+
         const app = initializeApp(firebaseConfig);
         db = getFirestore(app);
         auth = getAuth(app);
 
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          const cred = await signInWithCustomToken(auth, __initial_auth_token);
-          currentUser = cred.user;
-        } else {
-          const cred = await signInAnonymously(auth);
-          currentUser = cred.user;
+        // Пробуем авторизоваться, но даже если Anonymous Auth выключен в консоли — продолжаем работу напрямую
+        try {
+          if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+            const cred = await signInWithCustomToken(auth, __initial_auth_token);
+            currentUser = cred.user;
+          } else {
+            const cred = await signInAnonymously(auth);
+            currentUser = cred.user;
+          }
+        } catch (authErr) {
+          console.warn('Анонимный вход не активен, подключаемся напрямую к Firestore:', authErr?.code);
         }
 
         const code = getWorkspaceCode();
         subscribeToWorkspace(code);
       } catch (err) {
-        console.error('Ошибка инициализации облака:', err);
+        console.error('Ошибка инициализации Firebase:', err);
+        lastCloudErrorInfo = {
+          code: err?.code || 'init-error',
+          message: err?.message || 'Ошибка инициализации Firebase'
+        };
         updateCloudBadge('offline', 'Локально');
       }
     }
@@ -401,27 +449,10 @@
 
   <script>
     // =========================================================================
-    // 1. КОНСТАНТЫ И НАЧАЛЬНОЕ СОСТОЯНИЕ БЕЗ ДЕМО-ДАННЫХ
+    // 1. БАЗОВЫЕ КОНСТАНТЫ И СТРУКТУРА ПУСТОЙ БАЗЫ ДАННЫХ
     // =========================================================================
     const STORAGE_KEY = 'tigrum_center_clean_v3';
-    const AUTH_STORAGE_KEY = 'tigrum_center_auth_v1';
-
-    const DEFAULT_SUBJECTS = [
-      'Логопед',
-      'Подготовка к школе',
-      'Творческая мастерская',
-      'Английский язык',
-      'Робототехника'
-    ];
-
-    const AVATAR_COLORS = [
-      'bg-indigo-600',
-      'bg-emerald-600',
-      'bg-amber-500',
-      'bg-rose-500',
-      'bg-sky-600',
-      'bg-purple-600'
-    ];
+    const AUTH_STORAGE_KEY = 'tigrum_auth_lock_v1';
 
     const DAYS = [
       { key: 'Пн', full: 'Понедельник', jsDay: 1 },
@@ -443,6 +474,24 @@
       'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
     ];
 
+    const DEFAULT_SUBJECTS = [
+      'Логопед',
+      'Подготовка к школе',
+      'Английский язык',
+      'Творческая мастерская',
+      'Робототехника',
+      'Раннее развитие'
+    ];
+
+    const AVATAR_COLORS = [
+      'bg-indigo-600',
+      'bg-emerald-600',
+      'bg-amber-500',
+      'bg-rose-500',
+      'bg-sky-600',
+      'bg-purple-600'
+    ];
+
     function getEmptyStateData() {
       return {
         subjects: [...DEFAULT_SUBJECTS],
@@ -452,6 +501,347 @@
         attendanceLog: {},
         topUps: []
       };
+    }
+
+    // =========================================================================
+    // 2. БРЕНДИНГ И ЛОГОТИП ДЦ «ТИГРУМ» (CANVAS + ПОЛЬЗОВАТЕЛЬСКИЙ ФАЙЛ)
+    // =========================================================================
+    const CUSTOM_LOGO_STORAGE_KEY = 'tigrum_custom_logo_dataurl_v1';
+    let cachedLogoDataUrl = null;
+
+    function createTigrumLogoDataUrl() {
+      if (cachedLogoDataUrl) return cachedLogoDataUrl;
+
+      try {
+        const savedCustomLogo = localStorage.getItem(CUSTOM_LOGO_STORAGE_KEY);
+        if (savedCustomLogo && savedCustomLogo.startsWith('data:image/')) {
+          cachedLogoDataUrl = savedCustomLogo;
+          return cachedLogoDataUrl;
+        }
+      } catch (e) {}
+
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 480;
+        canvas.height = 380;
+        const ctx = canvas.getContext('2d');
+
+        // 1. Три сиренево-фиолетовых круга на фоне (как на IMG_1092_2.png)
+        ctx.fillStyle = '#9D71B8';
+        ctx.beginPath();
+        ctx.arc(374, 96, 68, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#9D71B8';
+        ctx.beginPath();
+        ctx.arc(136, 266, 86, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#8757A5';
+        ctx.beginPath();
+        ctx.arc(246, 186, 134, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Вспомогательная функция отрисовки объемного текста с паттерном и белой обводкой
+        function drawStyledWord(text, x, y, angleRad, fontSize, fillBuilder) {
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.rotate(angleRad);
+          ctx.font = `900 ${fontSize}px "Arial Black", Impact, Inter, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.lineJoin = 'round';
+          ctx.miterLimit = 2;
+
+          // Тёмная объёмная тень
+          ctx.lineWidth = 22;
+          ctx.strokeStyle = 'rgba(42, 22, 58, 0.45)';
+          ctx.strokeText(text, 4, 7);
+
+          // Белая внешняя наклейка-обводка
+          ctx.lineWidth = 20;
+          ctx.strokeStyle = '#FFFFFF';
+          ctx.strokeText(text, 0, 0);
+
+          // Тонкий тёмный контур вокруг букв
+          ctx.lineWidth = 5;
+          ctx.strokeStyle = '#3B1F0B';
+          ctx.strokeText(text, 0, 0);
+
+          // Заливка паттерном
+          ctx.fillStyle = fillBuilder();
+          ctx.fillText(text, 0, 0);
+          ctx.restore();
+        }
+
+        // Паттерн оранжевых тигровых полос для «ТИГР»
+        function makeTigerStripesPattern() {
+          const pCanvas = document.createElement('canvas');
+          pCanvas.width = 90;
+          pCanvas.height = 90;
+          const pCtx = pCanvas.getContext('2d');
+
+          const grad = pCtx.createLinearGradient(0, 0, 0, 90);
+          grad.addColorStop(0, '#FF941A');
+          grad.addColorStop(1, '#E86A0C');
+          pCtx.fillStyle = grad;
+          pCtx.fillRect(0, 0, 90, 90);
+
+          // Тигровые полоски
+          pCtx.fillStyle = '#B84B07';
+          const stripes = [
+            [0, 12, 42, 18, 90, 10, 90, 18, 42, 25, 0, 19],
+            [0, 44, 48, 36, 90, 46, 90, 54, 48, 44, 0, 52],
+            [0, 74, 40, 80, 90, 72, 90, 80, 40, 87, 0, 81]
+          ];
+          stripes.forEach(pts => {
+            pCtx.beginPath();
+            pCtx.moveTo(pts[0], pts[1]);
+            pCtx.lineTo(pts[2], pts[3]);
+            pCtx.lineTo(pts[4], pts[5]);
+            pCtx.lineTo(pts[6], pts[7]);
+            pCtx.lineTo(pts[8], pts[9]);
+            pCtx.lineTo(pts[10], pts[11]);
+            pCtx.closePath();
+            pCtx.fill();
+          });
+          return ctx.createPattern(pCanvas, 'repeat');
+        }
+
+        // Паттерн зелёного в тёмно-зелёный горошек для «УМ»
+        function makeGreenPolkaPattern() {
+          const pCanvas = document.createElement('canvas');
+          pCanvas.width = 48;
+          pCanvas.height = 48;
+          const pCtx = pCanvas.getContext('2d');
+
+          const grad = pCtx.createLinearGradient(0, 0, 0, 48);
+          grad.addColorStop(0, '#44B635');
+          grad.addColorStop(1, '#2B8E22');
+          pCtx.fillStyle = grad;
+          pCtx.fillRect(0, 0, 48, 48);
+
+          pCtx.fillStyle = '#1E6E18';
+          const dots = [
+            [12, 12, 6.5],
+            [36, 12, 6.5],
+            [24, 24, 6.5],
+            [12, 36, 6.5],
+            [36, 36, 6.5]
+          ];
+          dots.forEach(([dx, dy, r]) => {
+            pCtx.beginPath();
+            pCtx.arc(dx, dy, r, 0, Math.PI * 2);
+            pCtx.fill();
+          });
+          return ctx.createPattern(pCanvas, 'repeat');
+        }
+
+        // 2. Отрисовка слова «ТИГР» (сверху, с лёгким наклоном вверх-вправо)
+        drawStyledWord('ТИГР', 216, 134, -0.095, 118, makeTigerStripesPattern);
+
+        // 3. Отрисовка слова «УМ» (справа внизу)
+        drawStyledWord('УМ', 336, 250, -0.075, 116, makeGreenPolkaPattern);
+
+        // 4. Детализированный тигрёнок слева внизу
+        ctx.save();
+        ctx.translate(124, 268);
+
+        // Полосатый хвостик справа
+        ctx.lineCap = 'round';
+        ctx.lineWidth = 14;
+        ctx.strokeStyle = '#F58216';
+        ctx.beginPath();
+        ctx.moveTo(32, 46);
+        ctx.bezierCurveTo(64, 48, 76, 16, 66, -12);
+        ctx.stroke();
+
+        // Полоски и белый кончик на хвостике
+        ctx.lineWidth = 4.5;
+        ctx.strokeStyle = '#3B1F0B';
+        ctx.beginPath();
+        ctx.moveTo(52, 34); ctx.lineTo(62, 38);
+        ctx.moveTo(64, 16); ctx.lineTo(74, 16);
+        ctx.moveTo(63, 0); ctx.lineTo(73, -2);
+        ctx.stroke();
+
+        ctx.fillStyle = '#FFF7ED';
+        ctx.beginPath();
+        ctx.arc(65, -14, 7, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Туловище и грудка
+        ctx.fillStyle = '#F58216';
+        ctx.beginPath();
+        ctx.ellipse(6, 44, 34, 36, 0.12, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#FFF7ED';
+        ctx.beginPath();
+        ctx.ellipse(-4, 44, 18, 24, 0.05, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Передние и задние лапки с белыми носочками
+        const paws = [
+          [-24, 76, 15, 11],
+          [8, 78, 15, 11],
+          [34, 68, 13, 10]
+        ];
+        paws.forEach(([px, py, rx, ry]) => {
+          ctx.fillStyle = '#FFF7ED';
+          ctx.beginPath();
+          ctx.ellipse(px, py, rx, ry, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = '#D97706';
+          ctx.stroke();
+        });
+
+        // Ушки (оранжевые с тёмным краем и светлой серединой)
+        [[-36, -42, -0.35], [32, -46, 0.35]].forEach(([ex, ey, rot]) => {
+          ctx.save();
+          ctx.translate(ex, ey);
+          ctx.rotate(rot);
+          ctx.fillStyle = '#3B1F0B';
+          ctx.beginPath();
+          ctx.arc(0, 0, 17, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#F58216';
+          ctx.beginPath();
+          ctx.arc(0, 2, 14, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#FED7AA';
+          ctx.beginPath();
+          ctx.arc(0, 4, 8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        });
+
+        // Голова тигрёнка
+        ctx.fillStyle = '#F98B1E';
+        ctx.beginPath();
+        ctx.ellipse(-2, -6, 44, 38, -0.04, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Белые пушистые щёчки и мордочка
+        ctx.fillStyle = '#FFF8F0';
+        ctx.beginPath();
+        ctx.ellipse(-24, 10, 22, 15, -0.15, 0, Math.PI * 2);
+        ctx.ellipse(20, 8, 22, 15, 0.15, 0, Math.PI * 2);
+        ctx.ellipse(-2, 14, 18, 14, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Чубчик на макушке
+        ctx.fillStyle = '#451A03';
+        ctx.beginPath();
+        ctx.moveTo(-10, -42);
+        ctx.lineTo(-4, -56);
+        ctx.lineTo(2, -44);
+        ctx.lineTo(10, -54);
+        ctx.lineTo(12, -41);
+        ctx.closePath();
+        ctx.fill();
+
+        // Тигровые полоски на лбу и по бокам головы
+        ctx.fillStyle = '#3B1F0B';
+        ctx.beginPath();
+        ctx.ellipse(-2, -33, 11, 3.2, 0, 0, Math.PI * 2);
+        ctx.ellipse(-2, -25, 8, 2.6, 0, 0, Math.PI * 2);
+        ctx.ellipse(-38, -8, 8, 2.8, 0.25, 0, Math.PI * 2);
+        ctx.ellipse(34, -10, 8, 2.8, -0.25, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Большие выразительные изумрудные глаза
+        [[-18, -8], [14, -10]].forEach(([gx, gy]) => {
+          ctx.fillStyle = '#FFFFFF';
+          ctx.beginPath();
+          ctx.ellipse(gx, gy, 11, 13, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#059669';
+          ctx.beginPath();
+          ctx.arc(gx, gy + 1, 7.5, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#0F172A';
+          ctx.beginPath();
+          ctx.arc(gx, gy + 1, 4.3, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Блики в глазах
+          ctx.fillStyle = '#FFFFFF';
+          ctx.beginPath();
+          ctx.arc(gx - 2.5, gy - 2.5, 2.4, 0, Math.PI * 2);
+          ctx.arc(gx + 2.5, gy + 3, 1.2, 0, Math.PI * 2);
+          ctx.fill();
+        });
+
+        // Розовый носик и улыбающийся ротик
+        ctx.fillStyle = '#F472B6';
+        ctx.beginPath();
+        ctx.moveTo(-8, 5);
+        ctx.lineTo(4, 5);
+        ctx.lineTo(-2, 12);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = '#9F1239';
+        ctx.beginPath();
+        ctx.arc(-2, 15, 9, 0.1, Math.PI - 0.1);
+        ctx.fill();
+
+        ctx.fillStyle = '#FB7185';
+        ctx.beginPath();
+        ctx.ellipse(-2, 19, 5.5, 3.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+
+        cachedLogoDataUrl = canvas.toDataURL('image/png');
+        return cachedLogoDataUrl;
+      } catch (e) {
+        return '';
+      }
+    }
+
+    function handleCustomLogoUpload(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const img = new Image();
+        img.onload = function() {
+          try {
+            const maxW = 480;
+            const scale = img.width > maxW ? maxW / img.width : 1;
+            const c = document.createElement('canvas');
+            c.width = Math.round(img.width * scale);
+            c.height = Math.round(img.height * scale);
+            const cx = c.getContext('2d');
+            cx.drawImage(img, 0, 0, c.width, c.height);
+            const dataUrl = c.toDataURL('image/png');
+            localStorage.setItem(CUSTOM_LOGO_STORAGE_KEY, dataUrl);
+            cachedLogoDataUrl = dataUrl;
+            initBrandBranding();
+            switchTab(uiState.activeTab);
+            showToast('Логотип обновлен!', 'success');
+          } catch (err) {
+            showToast('Не удалось сохранить изображение', 'error');
+          }
+        };
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function resetCustomLogoToDefault() {
+      try {
+        localStorage.removeItem(CUSTOM_LOGO_STORAGE_KEY);
+      } catch (e) {}
+      cachedLogoDataUrl = null;
+      initBrandBranding();
+      switchTab(uiState.activeTab);
+      showToast('Восстановлен встроенный логотип «Тигрум»', 'info');
     }
 
     function loadInitialData() {
@@ -514,6 +904,36 @@
 
     function openCloudSyncModal() {
       const currentCode = window.cloudSyncApi ? window.cloudSyncApi.getWorkspaceCode() : 'tigrum-main';
+      const errInfo = window.cloudSyncApi && window.cloudSyncApi.getLastError ? window.cloudSyncApi.getLastError() : null;
+      const isOnline = window.cloudSyncApi && window.cloudSyncApi.isOnline ? window.cloudSyncApi.isOnline() : false;
+
+      let diagnosticHtml = '';
+      if (errInfo) {
+        diagnosticHtml = `
+          <div class="ios-card p-3.5 bg-rose-50 border border-rose-200 space-y-2">
+            <div class="text-[13px] font-bold text-rose-700">Почему сейчас работает локальный режим:</div>
+            <p class="text-[12px] text-rose-900 leading-relaxed">
+              База данных <b>tigris-crm</b> отклонила запрос (код: <code>${escapeHtml(errInfo.code)}</code>). Чтобы включить синхронизацию на всех устройствах:
+            </p>
+            <ol class="text-[12px] text-rose-900 list-decimal pl-4 space-y-1">
+              <li>Откройте <b>console.firebase.google.com</b> → проект <b>tigris-crm</b>.</li>
+              <li>В меню слева откройте <b>Firestore Database</b> (если база не создана — нажмите <i>Create database</i>).</li>
+              <li>Перейдите во вкладку <b>Rules</b>, замените текст на:<br>
+                <code class="block bg-white/80 p-1.5 rounded mt-1 text-[11px] font-mono select-all">rules_version = '2'; service cloud.firestore { match /databases/{database}/documents { match /{document=**} { allow read, write: if true; } } }</code>
+              </li>
+              <li>Нажмите кнопку <b>Publish</b> (Опубликовать) и нажмите кнопку проверки ниже.</li>
+            </ol>
+          </div>
+        `;
+      } else if (isOnline) {
+        diagnosticHtml = `
+          <div class="ios-card p-3 bg-emerald-50 border border-emerald-200 flex items-center gap-2.5">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0"></span>
+            <span class="text-[12px] font-semibold text-emerald-800">Облако подключено! Все изменения синхронизируются в реальном времени.</span>
+          </div>
+        `;
+      }
+
       openModal(`
         <div class="px-4 py-3.5 bg-white border-b border-black/5 flex items-center justify-between shrink-0">
           <button onclick="closeModal()" class="text-[15px] text-[#007AFF] font-medium">Закрыть</button>
@@ -521,6 +941,7 @@
           <button onclick="saveWorkspaceCodeFromModal()" class="text-[15px] text-[#007AFF] font-bold">Подключить</button>
         </div>
         <div class="p-4 overflow-y-auto space-y-4">
+          ${diagnosticHtml}
           <div class="ios-card p-4 space-y-3">
             <div class="flex items-center gap-3">
               ${getTigrumLogoImgHtml('w-12 h-10 object-contain shrink-0')}
@@ -538,8 +959,8 @@
                 </button>
               </div>
             </div>
-            <button onclick="window.cloudSyncApi && window.cloudSyncApi.forceUploadCurrentToCloud()" class="ios-press w-full bg-emerald-50 text-emerald-700 font-semibold text-[13px] py-2.5 rounded-xl">
-              Принудительно выгрузить текущую базу в облако
+            <button onclick="window.cloudSyncApi && window.cloudSyncApi.forceUploadCurrentToCloud()" class="ios-press w-full bg-[#007AFF] text-white font-semibold text-[13px] py-3 rounded-xl shadow-sm">
+              Проверить связь и выгрузить базу в облако
             </button>
           </div>
         </div>
@@ -607,91 +1028,6 @@
       financeYear: todayInit.getFullYear(),
       financeMonth: todayInit.getMonth()
     };
-
-    // =========================================================================
-    // 2. БРЕНДИНГ И ЛОГОТИП ДЦ «ТИГРУМ» (CANVAS)
-    // =========================================================================
-    let cachedLogoDataUrl = null;
-
-    function createTigrumLogoDataUrl() {
-      if (cachedLogoDataUrl) return cachedLogoDataUrl;
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = 240;
-        canvas.height = 200;
-        const ctx = canvas.getContext('2d');
-
-        // Фиолетовые круги на фоне
-        ctx.fillStyle = '#8B5CF6';
-        ctx.beginPath();
-        ctx.arc(118, 102, 82, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = '#A78BFA';
-        ctx.beginPath();
-        ctx.arc(178, 56, 36, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Слово ТИГР
-        ctx.save();
-        ctx.translate(120, 76);
-        ctx.rotate(-0.07);
-        ctx.font = '900 54px Inter, Arial, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.lineWidth = 8;
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.strokeText('ТИГР', 0, 0);
-        ctx.fillStyle = '#F97316';
-        ctx.fillText('ТИГР', 0, 0);
-        ctx.restore();
-
-        // Слово УМ
-        ctx.save();
-        ctx.translate(152, 134);
-        ctx.rotate(-0.05);
-        ctx.font = '900 52px Inter, Arial, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.lineWidth = 8;
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.strokeText('УМ', 0, 0);
-        ctx.fillStyle = '#22C55E';
-        ctx.fillText('УМ', 0, 0);
-        ctx.restore();
-
-        // Мордочка тигренка слева внизу
-        ctx.fillStyle = '#FB923C';
-        ctx.beginPath();
-        ctx.arc(62, 138, 30, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.stroke();
-
-        // Ушки
-        ctx.fillStyle = '#F97316';
-        ctx.beginPath();
-        ctx.arc(40, 114, 10, 0, Math.PI * 2);
-        ctx.arc(84, 114, 10, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Глазки и носик
-        ctx.fillStyle = '#1E293B';
-        ctx.beginPath();
-        ctx.arc(52, 134, 4, 0, Math.PI * 2);
-        ctx.arc(72, 134, 4, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = '#EC4899';
-        ctx.beginPath();
-        ctx.arc(62, 144, 4.5, 0, Math.PI * 2);
-        ctx.fill();
-
-        cachedLogoDataUrl = canvas.toDataURL('image/png');
-        return cachedLogoDataUrl;
-      } catch (e) {
-        return '';
-      }
-    }
 
     function getTigrumLogoImgHtml(classes = 'w-11 h-10 object-contain') {
       const url = createTigrumLogoDataUrl();
@@ -1892,6 +2228,15 @@
               Импорт (JSON)
               <input type="file" accept=".json,application/json" onchange="importDatabaseJson(event)" class="hidden" />
             </label>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="ios-press bg-purple-50 text-purple-700 font-semibold text-[13px] py-2.5 rounded-xl text-center cursor-pointer">
+              Загрузить логотип
+              <input type="file" accept="image/png,image/jpeg,image/webp" onchange="handleCustomLogoUpload(event)" class="hidden" />
+            </label>
+            <button onclick="resetCustomLogoToDefault()" class="ios-press bg-black/5 text-[#3C3C43] font-semibold text-[13px] py-2.5 rounded-xl">
+              Сброс логотипа
+            </button>
           </div>
           <button onclick="openResetConfirmModal()" class="ios-press w-full bg-rose-50 text-rose-600 font-semibold text-[13px] py-2.5 rounded-xl">
             Очистить все данные
