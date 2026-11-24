@@ -449,27 +449,10 @@
 
   <script>
     // =========================================================================
-    // 1. КОНСТАНТЫ И НАЧАЛЬНОЕ СОСТОЯНИЕ БЕЗ ДЕМО-ДАННЫХ
+    // 1. БАЗОВЫЕ КОНСТАНТЫ И СТРУКТУРА ПУСТОЙ БАЗЫ ДАННЫХ
     // =========================================================================
     const STORAGE_KEY = 'tigrum_center_clean_v3';
-    const AUTH_STORAGE_KEY = 'tigrum_center_auth_v1';
-
-    const DEFAULT_SUBJECTS = [
-      'Логопед',
-      'Подготовка к школе',
-      'Творческая мастерская',
-      'Английский язык',
-      'Робототехника'
-    ];
-
-    const AVATAR_COLORS = [
-      'bg-indigo-600',
-      'bg-emerald-600',
-      'bg-amber-500',
-      'bg-rose-500',
-      'bg-sky-600',
-      'bg-purple-600'
-    ];
+    const AUTH_STORAGE_KEY = 'tigrum_auth_lock_v1';
 
     const DAYS = [
       { key: 'Пн', full: 'Понедельник', jsDay: 1 },
@@ -491,6 +474,24 @@
       'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
     ];
 
+    const DEFAULT_SUBJECTS = [
+      'Логопед',
+      'Подготовка к школе',
+      'Английский язык',
+      'Творческая мастерская',
+      'Робототехника',
+      'Раннее развитие'
+    ];
+
+    const AVATAR_COLORS = [
+      'bg-indigo-600',
+      'bg-emerald-600',
+      'bg-amber-500',
+      'bg-rose-500',
+      'bg-sky-600',
+      'bg-purple-600'
+    ];
+
     function getEmptyStateData() {
       return {
         subjects: [...DEFAULT_SUBJECTS],
@@ -500,6 +501,347 @@
         attendanceLog: {},
         topUps: []
       };
+    }
+
+    // =========================================================================
+    // 2. БРЕНДИНГ И ЛОГОТИП ДЦ «ТИГРУМ» (CANVAS + ПОЛЬЗОВАТЕЛЬСКИЙ ФАЙЛ)
+    // =========================================================================
+    const CUSTOM_LOGO_STORAGE_KEY = 'tigrum_custom_logo_dataurl_v1';
+    let cachedLogoDataUrl = null;
+
+    function createTigrumLogoDataUrl() {
+      if (cachedLogoDataUrl) return cachedLogoDataUrl;
+
+      try {
+        const savedCustomLogo = localStorage.getItem(CUSTOM_LOGO_STORAGE_KEY);
+        if (savedCustomLogo && savedCustomLogo.startsWith('data:image/')) {
+          cachedLogoDataUrl = savedCustomLogo;
+          return cachedLogoDataUrl;
+        }
+      } catch (e) {}
+
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 480;
+        canvas.height = 380;
+        const ctx = canvas.getContext('2d');
+
+        // 1. Три сиренево-фиолетовых круга на фоне (как на IMG_1092_2.png)
+        ctx.fillStyle = '#9D71B8';
+        ctx.beginPath();
+        ctx.arc(374, 96, 68, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#9D71B8';
+        ctx.beginPath();
+        ctx.arc(136, 266, 86, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#8757A5';
+        ctx.beginPath();
+        ctx.arc(246, 186, 134, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Вспомогательная функция отрисовки объемного текста с паттерном и белой обводкой
+        function drawStyledWord(text, x, y, angleRad, fontSize, fillBuilder) {
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.rotate(angleRad);
+          ctx.font = `900 ${fontSize}px "Arial Black", Impact, Inter, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.lineJoin = 'round';
+          ctx.miterLimit = 2;
+
+          // Тёмная объёмная тень
+          ctx.lineWidth = 22;
+          ctx.strokeStyle = 'rgba(42, 22, 58, 0.45)';
+          ctx.strokeText(text, 4, 7);
+
+          // Белая внешняя наклейка-обводка
+          ctx.lineWidth = 20;
+          ctx.strokeStyle = '#FFFFFF';
+          ctx.strokeText(text, 0, 0);
+
+          // Тонкий тёмный контур вокруг букв
+          ctx.lineWidth = 5;
+          ctx.strokeStyle = '#3B1F0B';
+          ctx.strokeText(text, 0, 0);
+
+          // Заливка паттерном
+          ctx.fillStyle = fillBuilder();
+          ctx.fillText(text, 0, 0);
+          ctx.restore();
+        }
+
+        // Паттерн оранжевых тигровых полос для «ТИГР»
+        function makeTigerStripesPattern() {
+          const pCanvas = document.createElement('canvas');
+          pCanvas.width = 90;
+          pCanvas.height = 90;
+          const pCtx = pCanvas.getContext('2d');
+
+          const grad = pCtx.createLinearGradient(0, 0, 0, 90);
+          grad.addColorStop(0, '#FF941A');
+          grad.addColorStop(1, '#E86A0C');
+          pCtx.fillStyle = grad;
+          pCtx.fillRect(0, 0, 90, 90);
+
+          // Тигровые полоски
+          pCtx.fillStyle = '#B84B07';
+          const stripes = [
+            [0, 12, 42, 18, 90, 10, 90, 18, 42, 25, 0, 19],
+            [0, 44, 48, 36, 90, 46, 90, 54, 48, 44, 0, 52],
+            [0, 74, 40, 80, 90, 72, 90, 80, 40, 87, 0, 81]
+          ];
+          stripes.forEach(pts => {
+            pCtx.beginPath();
+            pCtx.moveTo(pts[0], pts[1]);
+            pCtx.lineTo(pts[2], pts[3]);
+            pCtx.lineTo(pts[4], pts[5]);
+            pCtx.lineTo(pts[6], pts[7]);
+            pCtx.lineTo(pts[8], pts[9]);
+            pCtx.lineTo(pts[10], pts[11]);
+            pCtx.closePath();
+            pCtx.fill();
+          });
+          return ctx.createPattern(pCanvas, 'repeat');
+        }
+
+        // Паттерн зелёного в тёмно-зелёный горошек для «УМ»
+        function makeGreenPolkaPattern() {
+          const pCanvas = document.createElement('canvas');
+          pCanvas.width = 48;
+          pCanvas.height = 48;
+          const pCtx = pCanvas.getContext('2d');
+
+          const grad = pCtx.createLinearGradient(0, 0, 0, 48);
+          grad.addColorStop(0, '#44B635');
+          grad.addColorStop(1, '#2B8E22');
+          pCtx.fillStyle = grad;
+          pCtx.fillRect(0, 0, 48, 48);
+
+          pCtx.fillStyle = '#1E6E18';
+          const dots = [
+            [12, 12, 6.5],
+            [36, 12, 6.5],
+            [24, 24, 6.5],
+            [12, 36, 6.5],
+            [36, 36, 6.5]
+          ];
+          dots.forEach(([dx, dy, r]) => {
+            pCtx.beginPath();
+            pCtx.arc(dx, dy, r, 0, Math.PI * 2);
+            pCtx.fill();
+          });
+          return ctx.createPattern(pCanvas, 'repeat');
+        }
+
+        // 2. Отрисовка слова «ТИГР» (сверху, с лёгким наклоном вверх-вправо)
+        drawStyledWord('ТИГР', 216, 134, -0.095, 118, makeTigerStripesPattern);
+
+        // 3. Отрисовка слова «УМ» (справа внизу)
+        drawStyledWord('УМ', 336, 250, -0.075, 116, makeGreenPolkaPattern);
+
+        // 4. Детализированный тигрёнок слева внизу
+        ctx.save();
+        ctx.translate(124, 268);
+
+        // Полосатый хвостик справа
+        ctx.lineCap = 'round';
+        ctx.lineWidth = 14;
+        ctx.strokeStyle = '#F58216';
+        ctx.beginPath();
+        ctx.moveTo(32, 46);
+        ctx.bezierCurveTo(64, 48, 76, 16, 66, -12);
+        ctx.stroke();
+
+        // Полоски и белый кончик на хвостике
+        ctx.lineWidth = 4.5;
+        ctx.strokeStyle = '#3B1F0B';
+        ctx.beginPath();
+        ctx.moveTo(52, 34); ctx.lineTo(62, 38);
+        ctx.moveTo(64, 16); ctx.lineTo(74, 16);
+        ctx.moveTo(63, 0); ctx.lineTo(73, -2);
+        ctx.stroke();
+
+        ctx.fillStyle = '#FFF7ED';
+        ctx.beginPath();
+        ctx.arc(65, -14, 7, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Туловище и грудка
+        ctx.fillStyle = '#F58216';
+        ctx.beginPath();
+        ctx.ellipse(6, 44, 34, 36, 0.12, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#FFF7ED';
+        ctx.beginPath();
+        ctx.ellipse(-4, 44, 18, 24, 0.05, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Передние и задние лапки с белыми носочками
+        const paws = [
+          [-24, 76, 15, 11],
+          [8, 78, 15, 11],
+          [34, 68, 13, 10]
+        ];
+        paws.forEach(([px, py, rx, ry]) => {
+          ctx.fillStyle = '#FFF7ED';
+          ctx.beginPath();
+          ctx.ellipse(px, py, rx, ry, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = '#D97706';
+          ctx.stroke();
+        });
+
+        // Ушки (оранжевые с тёмным краем и светлой серединой)
+        [[-36, -42, -0.35], [32, -46, 0.35]].forEach(([ex, ey, rot]) => {
+          ctx.save();
+          ctx.translate(ex, ey);
+          ctx.rotate(rot);
+          ctx.fillStyle = '#3B1F0B';
+          ctx.beginPath();
+          ctx.arc(0, 0, 17, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#F58216';
+          ctx.beginPath();
+          ctx.arc(0, 2, 14, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#FED7AA';
+          ctx.beginPath();
+          ctx.arc(0, 4, 8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        });
+
+        // Голова тигрёнка
+        ctx.fillStyle = '#F98B1E';
+        ctx.beginPath();
+        ctx.ellipse(-2, -6, 44, 38, -0.04, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Белые пушистые щёчки и мордочка
+        ctx.fillStyle = '#FFF8F0';
+        ctx.beginPath();
+        ctx.ellipse(-24, 10, 22, 15, -0.15, 0, Math.PI * 2);
+        ctx.ellipse(20, 8, 22, 15, 0.15, 0, Math.PI * 2);
+        ctx.ellipse(-2, 14, 18, 14, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Чубчик на макушке
+        ctx.fillStyle = '#451A03';
+        ctx.beginPath();
+        ctx.moveTo(-10, -42);
+        ctx.lineTo(-4, -56);
+        ctx.lineTo(2, -44);
+        ctx.lineTo(10, -54);
+        ctx.lineTo(12, -41);
+        ctx.closePath();
+        ctx.fill();
+
+        // Тигровые полоски на лбу и по бокам головы
+        ctx.fillStyle = '#3B1F0B';
+        ctx.beginPath();
+        ctx.ellipse(-2, -33, 11, 3.2, 0, 0, Math.PI * 2);
+        ctx.ellipse(-2, -25, 8, 2.6, 0, 0, Math.PI * 2);
+        ctx.ellipse(-38, -8, 8, 2.8, 0.25, 0, Math.PI * 2);
+        ctx.ellipse(34, -10, 8, 2.8, -0.25, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Большие выразительные изумрудные глаза
+        [[-18, -8], [14, -10]].forEach(([gx, gy]) => {
+          ctx.fillStyle = '#FFFFFF';
+          ctx.beginPath();
+          ctx.ellipse(gx, gy, 11, 13, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#059669';
+          ctx.beginPath();
+          ctx.arc(gx, gy + 1, 7.5, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#0F172A';
+          ctx.beginPath();
+          ctx.arc(gx, gy + 1, 4.3, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Блики в глазах
+          ctx.fillStyle = '#FFFFFF';
+          ctx.beginPath();
+          ctx.arc(gx - 2.5, gy - 2.5, 2.4, 0, Math.PI * 2);
+          ctx.arc(gx + 2.5, gy + 3, 1.2, 0, Math.PI * 2);
+          ctx.fill();
+        });
+
+        // Розовый носик и улыбающийся ротик
+        ctx.fillStyle = '#F472B6';
+        ctx.beginPath();
+        ctx.moveTo(-8, 5);
+        ctx.lineTo(4, 5);
+        ctx.lineTo(-2, 12);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = '#9F1239';
+        ctx.beginPath();
+        ctx.arc(-2, 15, 9, 0.1, Math.PI - 0.1);
+        ctx.fill();
+
+        ctx.fillStyle = '#FB7185';
+        ctx.beginPath();
+        ctx.ellipse(-2, 19, 5.5, 3.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.restore();
+
+        cachedLogoDataUrl = canvas.toDataURL('image/png');
+        return cachedLogoDataUrl;
+      } catch (e) {
+        return '';
+      }
+    }
+
+    function handleCustomLogoUpload(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const img = new Image();
+        img.onload = function() {
+          try {
+            const maxW = 480;
+            const scale = img.width > maxW ? maxW / img.width : 1;
+            const c = document.createElement('canvas');
+            c.width = Math.round(img.width * scale);
+            c.height = Math.round(img.height * scale);
+            const cx = c.getContext('2d');
+            cx.drawImage(img, 0, 0, c.width, c.height);
+            const dataUrl = c.toDataURL('image/png');
+            localStorage.setItem(CUSTOM_LOGO_STORAGE_KEY, dataUrl);
+            cachedLogoDataUrl = dataUrl;
+            initBrandBranding();
+            switchTab(uiState.activeTab);
+            showToast('Логотип обновлен!', 'success');
+          } catch (err) {
+            showToast('Не удалось сохранить изображение', 'error');
+          }
+        };
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function resetCustomLogoToDefault() {
+      try {
+        localStorage.removeItem(CUSTOM_LOGO_STORAGE_KEY);
+      } catch (e) {}
+      cachedLogoDataUrl = null;
+      initBrandBranding();
+      switchTab(uiState.activeTab);
+      showToast('Восстановлен встроенный логотип «Тигрум»', 'info');
     }
 
     function loadInitialData() {
@@ -686,91 +1028,6 @@
       financeYear: todayInit.getFullYear(),
       financeMonth: todayInit.getMonth()
     };
-
-    // =========================================================================
-    // 2. БРЕНДИНГ И ЛОГОТИП ДЦ «ТИГРУМ» (CANVAS)
-    // =========================================================================
-    let cachedLogoDataUrl = null;
-
-    function createTigrumLogoDataUrl() {
-      if (cachedLogoDataUrl) return cachedLogoDataUrl;
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = 240;
-        canvas.height = 200;
-        const ctx = canvas.getContext('2d');
-
-        // Фиолетовые круги на фоне
-        ctx.fillStyle = '#8B5CF6';
-        ctx.beginPath();
-        ctx.arc(118, 102, 82, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = '#A78BFA';
-        ctx.beginPath();
-        ctx.arc(178, 56, 36, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Слово ТИГР
-        ctx.save();
-        ctx.translate(120, 76);
-        ctx.rotate(-0.07);
-        ctx.font = '900 54px Inter, Arial, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.lineWidth = 8;
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.strokeText('ТИГР', 0, 0);
-        ctx.fillStyle = '#F97316';
-        ctx.fillText('ТИГР', 0, 0);
-        ctx.restore();
-
-        // Слово УМ
-        ctx.save();
-        ctx.translate(152, 134);
-        ctx.rotate(-0.05);
-        ctx.font = '900 52px Inter, Arial, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.lineWidth = 8;
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.strokeText('УМ', 0, 0);
-        ctx.fillStyle = '#22C55E';
-        ctx.fillText('УМ', 0, 0);
-        ctx.restore();
-
-        // Мордочка тигренка слева внизу
-        ctx.fillStyle = '#FB923C';
-        ctx.beginPath();
-        ctx.arc(62, 138, 30, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.stroke();
-
-        // Ушки
-        ctx.fillStyle = '#F97316';
-        ctx.beginPath();
-        ctx.arc(40, 114, 10, 0, Math.PI * 2);
-        ctx.arc(84, 114, 10, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Глазки и носик
-        ctx.fillStyle = '#1E293B';
-        ctx.beginPath();
-        ctx.arc(52, 134, 4, 0, Math.PI * 2);
-        ctx.arc(72, 134, 4, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = '#EC4899';
-        ctx.beginPath();
-        ctx.arc(62, 144, 4.5, 0, Math.PI * 2);
-        ctx.fill();
-
-        cachedLogoDataUrl = canvas.toDataURL('image/png');
-        return cachedLogoDataUrl;
-      } catch (e) {
-        return '';
-      }
-    }
 
     function getTigrumLogoImgHtml(classes = 'w-11 h-10 object-contain') {
       const url = createTigrumLogoDataUrl();
@@ -1971,6 +2228,15 @@
               Импорт (JSON)
               <input type="file" accept=".json,application/json" onchange="importDatabaseJson(event)" class="hidden" />
             </label>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="ios-press bg-purple-50 text-purple-700 font-semibold text-[13px] py-2.5 rounded-xl text-center cursor-pointer">
+              Загрузить логотип
+              <input type="file" accept="image/png,image/jpeg,image/webp" onchange="handleCustomLogoUpload(event)" class="hidden" />
+            </label>
+            <button onclick="resetCustomLogoToDefault()" class="ios-press bg-black/5 text-[#3C3C43] font-semibold text-[13px] py-2.5 rounded-xl">
+              Сброс логотипа
+            </button>
           </div>
           <button onclick="openResetConfirmModal()" class="ios-press w-full bg-rose-50 text-rose-600 font-semibold text-[13px] py-2.5 rounded-xl">
             Очистить все данные
